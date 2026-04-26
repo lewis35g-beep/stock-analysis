@@ -52,7 +52,12 @@ def get_data(ticker, period, interval):
 
 
 def resample_to_4h(df):
-    df_4h = df.resample("4H").agg({
+    df = df.copy()
+
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df.index = pd.to_datetime(df.index)
+
+    df_4h = df.resample("4h").agg({
         "Open": "first",
         "High": "max",
         "Low": "min",
