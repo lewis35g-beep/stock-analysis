@@ -5,7 +5,6 @@ import streamlit as st
 import mplfinance as mpf
 from openai import OpenAI
 
-# ---------------- CONFIG ----------------
 st.set_page_config(
     page_title="Forex & Stock Technical Analysis App",
     layout="wide"
@@ -13,12 +12,34 @@ st.set_page_config(
 
 st.title("Forex & Stock Technical Analysis App")
 
-ticker = st.text_input("Enter ticker", "EURUSD=X")
+ticker_input = st.text_input("Enter stock, crypto, or forex pair", "EURUSD")
 use_ai = st.checkbox("Use AI Summary")
 
-# ---------------- DATA ----------------
+
+def normalize_ticker(ticker):
+    ticker = ticker.strip().upper()
+
+    forex_pairs = [
+        "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
+        "USDCAD", "USDCHF", "NZDUSD",
+        "EURJPY", "GBPJPY", "EURGBP", "EURAUD",
+        "AUDJPY", "CADJPY", "CHFJPY"
+    ]
+
+    if ticker in forex_pairs:
+        return ticker + "=X"
+
+    return ticker
+
+
 def get_data(ticker, period, interval):
-    df = yf.download(ticker, period=period, interval=interval, auto_adjust=True)
+    df = yf.download(
+        ticker,
+        period=period,
+        interval=interval,
+        auto_adjust=True,
+        progress=False
+    )
 
     if df.empty:
         return None
@@ -29,7 +50,19 @@ def get_data(ticker, period, interval):
     df.dropna(inplace=True)
     return df
 
-# ---------------- INDICATORS ----------------
+
+def resample_to_4h(df):
+    df_4h = df.resample("4H").agg({
+        "Open": "first",
+        "High": "max",
+        "Low": "min",
+        "Close": "last"
+    })
+
+    df_4h.dropna(inplace=True)
+    return df_4h
+
+
 def add_indicators(df):
     df["EMA_20"] = df["Close"].ewm(span=20).mean()
     df["EMA_50"] = df["Close"].ewm(span=50).mean()
@@ -44,13 +77,22 @@ def add_indicators(df):
     high_low = df["High"] - df["Low"]
     high_close = abs(df["High"] - df["Close"].shift())
     low_close = abs(df["Low"] - df["Close"].shift())
-    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    true_range = pd.concat(
+        [high_low, high_close, low_close],
+        axis=1
+    ).max(axis=1)
+
     df["ATR"] = true_range.rolling(14).mean()
+
+    df["EMA_12"] = df["Close"].ewm(span=12).mean()
+    df["EMA_26"] = df["Close"].ewm(span=26).mean()
+    df["MACD"] = df["EMA_12"] - df["EMA_26"]
+    df["MACD_signal"] = df["MACD"].ewm(span=9).mean()
 
     df.dropna(inplace=True)
     return df
 
-# ---------------- LOGIC ----------------
+
 def trend_direction(df):
     latest = df.iloc[-1]
 
@@ -58,31 +100,52 @@ def trend_direction(df):
         return "Bullish"
     elif latest["EMA_20"] < latest["EMA_50"] < latest["EMA_200"]:
         return "Bearish"
-    return "Sideways"
+    else:
+        return "Mixed / Sideways"
 
-def support_resistance(df):
-    return df["Low"].tail(50).min(), df["High"].tail(50).max()
 
-def generate_trade_logic(daily_trend, four_hour_trend, df):
-    latest = df.iloc[-1]
+def support_resistance(df, lookback=50):
+    recent = df.tail(lookback)
+    support = recent["Low"].min()
+    resistance = recent["High"].max()
+    return support, resistance
+
+
+def trendline_detection(df, lookback=30):
+    recent = df.tail(lookback)
+
+    first_close = recent["Close"].iloc[0]
+    last_close = recent["Close"].iloc[-1]
+
+    if last_close > first_close:
+        return "Uptrend line rising"
+    elif last_close < first_close:
+        return "Downtrend line falling"
+    else:
+        return "Flat trendline / consolidation"
+
+
+def generate_trade_logic(daily_trend, four_hour_trend, one_hour_df):
+    latest = one_hour_df.iloc[-1]
 
     price = latest["Close"]
     atr = latest["ATR"]
     rsi = latest["RSI"]
 
-    support, resistance = support_resistance(df)
+    support, resistance = support_resistance(one_hour_df)
 
-    if daily_trend == "Bullish":
-        bias = "Buy"
-        sl = price - atr * 1.5
-        tp = price + atr * 3
-    elif daily_trend == "Bearish":
-        bias = "Sell"
-        sl = price + atr * 1.5
-        tp = price - atr * 3
+    if daily_trend == "Bullish" and four_hour_trend in ["Bullish", "Mixed / Sideways"]:
+        bias = "Buy Only"
+        stop_loss = price - atr * 1.5
+        take_profit = price + atr * 3
+    elif daily_trend == "Bearish" and four_hour_trend in ["Bearish", "Mixed / Sideways"]:
+        bias = "Sell Only"
+        stop_loss = price + atr * 1.5
+        take_profit = price - atr * 3
     else:
-        bias = "No Trade"
-        sl, tp = None, None
+        bias = "No Trade / Wait"
+        stop_loss = None
+        take_profit = None
 
     return {
         "price": price,
@@ -91,13 +154,13 @@ def generate_trade_logic(daily_trend, four_hour_trend, df):
         "support": support,
         "resistance": resistance,
         "bias": bias,
-        "stop_loss": sl,
-        "take_profit": tp
+        "stop_loss": stop_loss,
+        "take_profit": take_profit
     }
 
-# ---------------- CHART ----------------
+
 def create_chart(df, ticker, timeframe, trade=None):
-    chart_df = df.tail(100)
+    chart_df = df.tail(100).copy()
 
     add_plots = [
         mpf.make_addplot(chart_df["EMA_20"]),
@@ -106,11 +169,15 @@ def create_chart(df, ticker, timeframe, trade=None):
     ]
 
     hlines = []
+
     if trade:
-        hlines += [trade["support"], trade["resistance"]]
-        if trade["stop_loss"]:
+        hlines.append(trade["support"])
+        hlines.append(trade["resistance"])
+
+        if trade["stop_loss"] is not None:
             hlines.append(trade["stop_loss"])
-        if trade["take_profit"]:
+
+        if trade["take_profit"] is not None:
             hlines.append(trade["take_profit"])
 
     fig, _ = mpf.plot(
@@ -119,21 +186,25 @@ def create_chart(df, ticker, timeframe, trade=None):
         style="yahoo",
         addplot=add_plots,
         hlines=dict(hlines=hlines),
-        returnfig=True
+        returnfig=True,
+        figsize=(12, 6),
+        title=f"{ticker} {timeframe}"
     )
 
     return fig
 
-# ---------------- MAIN ----------------
-if st.button("Analyze"):
 
-    df_1h = get_data(ticker, "2mo", "1h")
-    df_4h = get_data(ticker, "6mo", "4h")
+if st.button("Analyze"):
+    ticker = normalize_ticker(ticker_input)
+
+    df_1h = get_data(ticker, "60d", "1h")
     df_1d = get_data(ticker, "2y", "1d")
 
-    if df_1h is None:
-        st.error("Invalid ticker")
+    if df_1h is None or df_1d is None:
+        st.error("Invalid ticker or no data found.")
         st.stop()
+
+    df_4h = resample_to_4h(df_1h)
 
     df_1h = add_indicators(df_1h)
     df_4h = add_indicators(df_4h)
@@ -142,51 +213,103 @@ if st.button("Analyze"):
     daily_trend = trend_direction(df_1d)
     four_hour_trend = trend_direction(df_4h)
     one_hour_trend = trend_direction(df_1h)
+    trendline = trendline_detection(df_1h)
 
     trade = generate_trade_logic(daily_trend, four_hour_trend, df_1h)
 
-    st.subheader("Trends")
-    st.write({
-        "1D": daily_trend,
-        "4H": four_hour_trend,
-        "1H": one_hour_trend,
-        "Bias": trade["bias"]
-    })
+    st.subheader("Multi-Timeframe Analysis")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("1D Confirmation", daily_trend)
+    col2.metric("4H Trend", four_hour_trend)
+    col3.metric("1H Entry Trend", one_hour_trend)
+    col4.metric("Bias", trade["bias"])
+
+    st.subheader("Trade Setup")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Current Price", f"{trade['price']:.5f}")
+    c2.metric("RSI", f"{trade['rsi']:.2f}")
+    c3.metric("ATR", f"{trade['atr']:.5f}")
+    c4.metric("Trendline", trendline)
+
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Support", f"{trade['support']:.5f}")
+    c6.metric("Resistance", f"{trade['resistance']:.5f}")
+    c7.metric(
+        "Stop Loss",
+        "N/A" if trade["stop_loss"] is None else f"{trade['stop_loss']:.5f}"
+    )
+    c8.metric(
+        "Take Profit",
+        "N/A" if trade["take_profit"] is None else f"{trade['take_profit']:.5f}"
+    )
 
     st.subheader("Charts")
-    st.pyplot(create_chart(df_1h, ticker, "1H", trade))
 
-    # ---------------- PROMPT ----------------
+    tab1, tab2, tab3 = st.tabs(["1H Entry", "4H Trend", "1D Confirmation"])
+
+    with tab1:
+        st.pyplot(create_chart(df_1h, ticker, "1H Entry", trade))
+
+    with tab2:
+        st.pyplot(create_chart(df_4h, ticker, "4H Trend"))
+
+    with tab3:
+        st.pyplot(create_chart(df_1d, ticker, "1D Confirmation"))
+
     prompt = f"""
-Analyze {ticker}
+You are a professional forex and stock technical analyst.
 
+Analyze {ticker} using this multi-timeframe setup.
+
+Rules:
+- 1D = confirmation
+- 4H = trend direction
+- 1H = entry
+- Only take buys if Daily trend is bullish
+- Only take sells if Daily trend is bearish
+- Use ATR for stop loss planning
+- Use support and resistance for targets
+
+Market Summary:
 1D Trend: {daily_trend}
 4H Trend: {four_hour_trend}
 1H Trend: {one_hour_trend}
+Trendline: {trendline}
 
-Price: {trade['price']}
+Trade Data:
+Current Price: {trade['price']}
 RSI: {trade['rsi']}
 ATR: {trade['atr']}
 Support: {trade['support']}
 Resistance: {trade['resistance']}
 Bias: {trade['bias']}
+Stop Loss: {trade['stop_loss']}
+Take Profit: {trade['take_profit']}
 
-Give a short trading summary.
+Give a clean trading summary with:
+1. Market bias
+2. Buy, sell, or no-trade setup
+3. Entry idea
+4. Stop loss logic
+5. Take profit logic
+6. What invalidates the setup
+7. Risk warning
 """
 
-    # ---------------- AI ----------------
     if use_ai:
         api_key = os.getenv("OPENAI_API_KEY")
 
         if not api_key:
-            st.warning("OPENAI_API_KEY not set")
+            st.warning("OPENAI_API_KEY is not set.")
         else:
             client = OpenAI(api_key=api_key)
 
             try:
                 response = client.responses.create(
                     model="gpt-4.1-mini",
-                    input=prompt
+                    input=str(prompt)
                 )
 
                 st.subheader("AI Analysis")
