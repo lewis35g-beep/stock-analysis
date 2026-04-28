@@ -32,19 +32,6 @@ def normalize_ticker(ticker):
         return ticker + "=X"
 
     return ticker
-ticker = ticker.strip().upper()
-
-    forex_pairs = [
-        "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
-        "USDCAD", "USDCHF", "NZDUSD",
-        "EURJPY", "GBPJPY", "EURGBP", "EURAUD",
-        "AUDJPY", "CADJPY", "CHFJPY"
-    ]
-
-    if ticker in forex_pairs:
-        return ticker + "=X"
-
-    return ticker
 
 
 
@@ -419,7 +406,7 @@ Give a clean trading summary with:
 
         if use_ai:
             try:
-                news_analysis = analyze_news_with_ai(news_query, articles)
+                news_analysis = analyze_news_with_ai(ticker, articles)
 
                 st.subheader("AI News Impact Analysis")
                 st.write(news_analysis)
