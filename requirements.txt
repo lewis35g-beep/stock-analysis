@@ -6,3 +6,4 @@ matplotlib
 openai
 requests
 streamlit-autorefresh
+feedparser
