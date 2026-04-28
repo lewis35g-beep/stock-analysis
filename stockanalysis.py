@@ -33,7 +33,27 @@ def normalize_ticker(ticker):
 
     return ticker
 
+def clean_news_ticker(ticker):
+    ticker = ticker.replace("=X", "").upper()
 
+    forex_news_names = {
+        "EURUSD": "EUR USD forex euro dollar",
+        "GBPUSD": "GBP USD forex pound dollar",
+        "USDJPY": "USD JPY forex dollar yen",
+        "AUDUSD": "AUD USD forex australian dollar",
+        "USDCAD": "USD CAD forex dollar canadian",
+        "USDCHF": "USD CHF forex dollar swiss franc",
+        "NZDUSD": "NZD USD forex new zealand dollar",
+        "EURJPY": "EUR JPY forex euro yen",
+        "GBPJPY": "GBP JPY forex pound yen",
+        "EURGBP": "EUR GBP forex euro pound",
+        "EURAUD": "EUR AUD forex euro australian dollar",
+        "AUDJPY": "AUD JPY forex australian dollar yen",
+        "CADJPY": "CAD JPY forex canadian dollar yen",
+        "CHFJPY": "CHF JPY forex swiss franc yen"
+    }
+
+    return forex_news_names.get(ticker, ticker)
 
 def get_data(ticker, period, interval):
     df = yf.download(
