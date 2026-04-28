@@ -4,6 +4,8 @@ import pandas as pd
 import streamlit as st
 import mplfinance as mpf
 from openai import OpenAI
+import feedparser
+from urllib.parse import quote_plus
 
 st.set_page_config(
     page_title="Forex & Stock Technical Analysis App",
@@ -198,6 +200,70 @@ def create_chart(df, ticker, timeframe, trade=None):
 
     return fig
 
+def get_news(ticker, max_articles=10):
+    query = quote_plus(ticker)
+    url = f"https://news.google.com/rss/search?q={query}+stock+forex+market&hl=en-US&gl=US&ceid=US:en"
+
+    feed = feedparser.parse(url)
+
+    articles = []
+
+    for entry in feed.entries[:max_articles]:
+        articles.append({
+            "title": entry.title,
+            "link": entry.link,
+            "published": entry.get("published", "N/A"),
+            "summary": entry.get("summary", "")
+        })
+
+    return articles
+
+def analyze_news_with_ai(ticker, articles):
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        return "OPENAI_API_KEY not set."
+
+    client = OpenAI(api_key=api_key)
+
+    news_text = ""
+
+    for i, article in enumerate(articles, 1):
+        news_text += f"""
+Article {i}
+Title: {article['title']}
+Published: {article['published']}
+Summary: {article['summary']}
+Link: {article['link']}
+"""
+
+    prompt = f"""
+You are a market news analyst.
+
+Analyze the following public news headlines for {ticker}.
+
+Determine whether the news is:
+- Bullish for price
+- Bearish for price
+- Neutral / unclear
+
+For each article, explain briefly why.
+
+Then give an overall news sentiment:
+Bullish, Bearish, or Neutral.
+
+Also explain whether the news supports or conflicts with the current technical trade setup.
+
+News:
+{news_text}
+"""
+
+    response = client.responses.create(
+        model="gpt-4.1-mini",
+        input=prompt
+    )
+
+    return response.output_text
 
 if st.button("Analyze"):
     ticker = normalize_ticker(ticker_input)
@@ -322,3 +388,26 @@ Give a clean trading summary with:
 
             except Exception as e:
                 st.error(f"AI failed: {e}")
+
+    st.subheader("News Feed Sentiment")
+
+    articles = get_news(ticker, max_articles=10)
+
+    if not articles:
+        st.warning("No news found.")
+    else:
+        for article in articles:
+            st.markdown(f"**{article['title']}**")
+            st.caption(article["published"])
+            st.markdown(f"[Read article]({article['link']})")
+            st.divider()
+
+        if use_ai:
+            try:
+                news_analysis = analyze_news_with_ai(ticker, articles)
+
+                st.subheader("AI News Impact Analysis")
+                st.write(news_analysis)
+
+            except Exception as e:
+                st.error(f"News AI analysis failed: {e}")
