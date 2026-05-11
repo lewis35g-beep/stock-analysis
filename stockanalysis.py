@@ -383,6 +383,16 @@ if st.button("Analyze"):
             k=5
         )
 
+if technical_knowledge:
+    st.subheader("Retrieved Book Knowledge Used in Analysis")
+    st.text_area(
+        "Relevant Technical Analysis Passages",
+        technical_knowledge,
+        height=400
+    )
+else:
+    st.info("No relevant book passages were found.")
+
     
 
     st.subheader("Multi-Timeframe Analysis")
