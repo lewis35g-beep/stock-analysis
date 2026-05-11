@@ -6,6 +6,10 @@ import mplfinance as mpf
 from openai import OpenAI
 import feedparser
 from urllib.parse import quote_plus
+from pypdf import PdfReader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings
+from langchain.vectorstores import Chroma
 
 st.set_page_config(
     page_title="Forex & Stock Technical Analysis App",
@@ -16,6 +20,14 @@ st.title("Forex & Stock Technical Analysis App")
 
 ticker_input = st.text_input("Enter stock, crypto, or forex pair", "EURUSD")
 use_ai = st.checkbox("Use AI Summary")
+
+uploaded_files = st.file_uploader(
+    "Upload Technical Analysis PDFs",
+    type=["pdf"],
+    accept_multiple_files=True
+)
+
+train_books = st.button("Train AI on Uploaded Books")
 
 
 def normalize_ticker(ticker):
@@ -285,6 +297,50 @@ News:
     )
 
     return response.output_text
+
+def extract_pdf_text(uploaded_file):
+    reader = PdfReader(uploaded_file)
+    text = ""
+
+    for page in reader.pages:
+        text += page.extract_text() or ""
+
+    return text
+
+
+def chunk_text(text):
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1500,
+        chunk_overlap=200
+    )
+    return splitter.split_text(text)
+
+
+def build_vector_store(chunks):
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    embeddings = OpenAIEmbeddings(api_key=api_key)
+    db = Chroma.from_texts(chunks, embeddings)
+
+    return db
+
+
+def search_technical_knowledge(db, query, k=5):
+    docs = db.similarity_search(query, k=k)
+    return "\n\n".join(doc.page_content for doc in docs)
+
+if train_books and uploaded_files:
+    with st.spinner("Training AI on technical analysis books..."):
+        all_text = ""
+
+        for uploaded_file in uploaded_files:
+            all_text += extract_pdf_text(uploaded_file) + "\n"
+
+        chunks = chunk_text(all_text)
+        db = build_vector_store(chunks)
+
+        st.session_state["technical_db"] = db
+        st.success(f"AI trained on {len(uploaded_files)} PDF(s).")
 
 if st.button("Analyze"):
     ticker = normalize_ticker(ticker_input)
