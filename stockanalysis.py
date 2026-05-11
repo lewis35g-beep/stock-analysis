@@ -7,8 +7,6 @@ from openai import OpenAI
 import feedparser
 from urllib.parse import quote_plus
 from pypdf import PdfReader
-from langchain_openai import OpenAIEmbeddings
-from langchain_chroma import Chroma
 
 st.set_page_config(
     page_title="Forex & Stock Technical Analysis App",
@@ -319,31 +317,32 @@ def chunk_text(text, chunk_size=1500, overlap=200):
     return chunks
 
 
-def build_vector_store(chunks):
-    api_key = os.getenv("OPENAI_API_KEY")
+def search_technical_knowledge(chunks, query, k=5):
+    query_words = set(query.lower().split())
+    scored_chunks = []
 
-    embeddings = OpenAIEmbeddings(api_key=api_key)
-    db = Chroma.from_texts(chunks, embeddings)
+    for chunk in chunks:
+        chunk_lower = chunk.lower()
+        score = sum(1 for word in query_words if word in chunk_lower)
 
-    return db
+        if score > 0:
+            scored_chunks.append((score, chunk))
 
+    scored_chunks.sort(reverse=True, key=lambda x: x[0])
 
-def search_technical_knowledge(db, query, k=5):
-    docs = db.similarity_search(query, k=k)
-    return "\n\n".join(doc.page_content for doc in docs)
+    return "\n\n".join(chunk for score, chunk in scored_chunks[:k])
 
 if train_books and uploaded_files:
-    with st.spinner("Training AI on technical analysis books..."):
+    with st.spinner("Reading technical analysis PDFs..."):
         all_text = ""
 
         for uploaded_file in uploaded_files:
             all_text += extract_pdf_text(uploaded_file) + "\n"
 
         chunks = chunk_text(all_text)
-        db = build_vector_store(chunks)
 
-        st.session_state["technical_db"] = db
-        st.success(f"AI trained on {len(uploaded_files)} PDF(s).")
+        st.session_state["technical_chunks"] = chunks
+        st.success(f"Loaded {len(chunks)} knowledge chunks from {len(uploaded_files)} PDF(s).")
 
 if st.button("Analyze"):
     ticker = normalize_ticker(ticker_input)
@@ -367,6 +366,24 @@ if st.button("Analyze"):
     trendline = trendline_detection(df_1h)
 
     trade = generate_trade_logic(daily_trend, four_hour_trend, df_1h)
+    
+    technical_knowledge = ""
+
+    if "technical_chunks" in st.session_state:
+        query = (
+            f"{ticker} "
+            f"{daily_trend} "
+            f"{four_hour_trend} "
+            f"RSI ATR support resistance candlestick trend entry"
+        )
+
+        technical_knowledge = search_technical_knowledge(
+            st.session_state["technical_chunks"],
+            query,
+            k=5
+        )
+
+    
 
     st.subheader("Multi-Timeframe Analysis")
 
@@ -411,6 +428,8 @@ if st.button("Analyze"):
 
     prompt = f"""
 You are a professional forex and stock technical analyst.
+Relevant Uploaded Book Knowledge:
+{technical_knowledge}
 
 Analyze {ticker} using this multi-timeframe setup.
 

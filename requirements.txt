@@ -7,8 +7,4 @@ openai>=1.79
 feedparser>=6.0.11
 pypdf>=5.4
 langchain>=0.3.25
-langchain-openai>=0.3.18
-chromadb>=1.0.9
-tiktoken>=0.9.0
 requests
-langchain-chroma
