@@ -8,7 +8,7 @@ import feedparser
 from urllib.parse import quote_plus
 from pypdf import PdfReader
 from langchain_openai import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
+from langchain_chroma import Chroma
 
 st.set_page_config(
     page_title="Forex & Stock Technical Analysis App",
