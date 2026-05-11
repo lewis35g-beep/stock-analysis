@@ -385,7 +385,7 @@ if st.button("Analyze"):
             k=5
         )
 
-if technical_knowledge:
+if "technical_knowledge" in locals() and technical_knowledge:
     st.subheader("Retrieved Book Knowledge Used in Analysis")
     st.text_area(
         "Relevant Technical Analysis Passages",
