@@ -7,7 +7,7 @@ from openai import OpenAI
 import feedparser
 from urllib.parse import quote_plus
 from pypdf import PdfReader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
 
