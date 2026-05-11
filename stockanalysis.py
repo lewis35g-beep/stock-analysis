@@ -345,6 +345,8 @@ if train_books and uploaded_files:
         st.success(f"Loaded {len(chunks)} knowledge chunks from {len(uploaded_files)} PDF(s).")
 
 if st.button("Analyze"):
+    technical_knowledge = ""
+
     ticker = normalize_ticker(ticker_input)
 
     df_1h = get_data(ticker, "60d", "1h")
