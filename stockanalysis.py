@@ -7,7 +7,6 @@ from openai import OpenAI
 import feedparser
 from urllib.parse import quote_plus
 from pypdf import PdfReader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
 
@@ -308,12 +307,16 @@ def extract_pdf_text(uploaded_file):
     return text
 
 
-def chunk_text(text):
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1500,
-        chunk_overlap=200
-    )
-    return splitter.split_text(text)
+def chunk_text(text, chunk_size=1500, overlap=200):
+    chunks = []
+    start = 0
+
+    while start < len(text):
+        end = start + chunk_size
+        chunks.append(text[start:end])
+        start += chunk_size - overlap
+
+    return chunks
 
 
 def build_vector_store(chunks):
