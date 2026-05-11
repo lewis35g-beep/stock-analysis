@@ -7,3 +7,8 @@ openai
 requests
 streamlit-autorefresh
 feedparser
+pypdf
+langchain
+langchain-openai
+chromadb
+tiktoken
