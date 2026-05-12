@@ -7,6 +7,7 @@ from openai import OpenAI
 import feedparser
 from urllib.parse import quote_plus
 from pypdf import PdfReader
+from pathlib import Path
 
 st.set_page_config(
     page_title="Forex & Stock Technical Analysis App",
@@ -17,14 +18,6 @@ st.title("Forex & Stock Technical Analysis App")
 
 ticker_input = st.text_input("Enter stock, crypto, or forex pair", "EURUSD")
 use_ai = st.checkbox("Use AI Summary")
-
-uploaded_files = st.file_uploader(
-    "Upload Technical Analysis PDFs",
-    type=["pdf"],
-    accept_multiple_files=True
-)
-
-train_books = st.button("Train AI on Uploaded Books")
 
 
 def normalize_ticker(ticker):
@@ -332,6 +325,29 @@ def search_technical_knowledge(chunks, query, k=5):
 
     return "\n\n".join(chunk for score, chunk in scored_chunks[:k])
 
+@st.cache_data
+def load_backend_books():
+    books_folder = Path("books")
+    all_text = ""
+
+    if not books_folder.exists():
+        return []
+
+    pdf_files = list(books_folder.glob("*.pdf"))
+
+    for pdf_file in pdf_files:
+        try:
+            with open(pdf_file, "rb") as f:
+                text = extract_pdf_text(f)
+                all_text += text + "\n"
+        except Exception as e:
+            st.warning(f"Could not read {pdf_file.name}: {e}")
+
+    if not all_text.strip():
+        return []
+
+    return chunk_text(all_text)
+
 if train_books and uploaded_files:
     with st.spinner("Reading technical analysis PDFs..."):
         all_text = ""
@@ -343,6 +359,22 @@ if train_books and uploaded_files:
 
         st.session_state["technical_chunks"] = chunks
         st.success(f"Loaded {len(chunks)} knowledge chunks from {len(uploaded_files)} PDF(s).")
+
+technical_chunks = load_backend_books()
+
+if technical_chunks:
+    query = (
+        f"{ticker} "
+        f"{daily_trend} "
+        f"{four_hour_trend} "
+        f"RSI ATR support resistance candlestick trend entry"
+    )
+
+    technical_knowledge = search_technical_knowledge(
+        technical_chunks,
+        query,
+        k=5
+    )
 
 if st.button("Analyze"):
     technical_knowledge = ""
@@ -368,8 +400,6 @@ if st.button("Analyze"):
     trendline = trendline_detection(df_1h)
 
     trade = generate_trade_logic(daily_trend, four_hour_trend, df_1h)
-    
-    technical_knowledge = ""
 
     if "technical_chunks" in st.session_state:
         query = (
@@ -385,17 +415,15 @@ if st.button("Analyze"):
             k=5
         )
 
-if "technical_knowledge" in locals() and technical_knowledge:
-    st.subheader("Retrieved Book Knowledge Used in Analysis")
-    st.text_area(
-        "Relevant Technical Analysis Passages",
-        technical_knowledge,
-        height=400
-    )
-else:
-    st.info("No relevant book passages were found.")
-
-    
+    if technical_knowledge:
+        st.subheader("Retrieved Book Knowledge Used in Analysis")
+        st.text_area(
+            "Relevant Technical Analysis Passages",
+            technical_knowledge,
+            height=400
+        )
+    else:
+        st.info("No relevant book passages were found.")
 
     st.subheader("Multi-Timeframe Analysis")
 
