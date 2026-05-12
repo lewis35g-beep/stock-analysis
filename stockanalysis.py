@@ -348,17 +348,7 @@ def load_backend_books():
 
     return chunk_text(all_text)
 
-if train_books and uploaded_files:
-    with st.spinner("Reading technical analysis PDFs..."):
-        all_text = ""
 
-        for uploaded_file in uploaded_files:
-            all_text += extract_pdf_text(uploaded_file) + "\n"
-
-        chunks = chunk_text(all_text)
-
-        st.session_state["technical_chunks"] = chunks
-        st.success(f"Loaded {len(chunks)} knowledge chunks from {len(uploaded_files)} PDF(s).")
 
 technical_chunks = load_backend_books()
 
