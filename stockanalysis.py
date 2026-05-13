@@ -311,7 +311,17 @@ def chunk_text(text, chunk_size=1500, overlap=200):
 
 
 def search_technical_knowledge(chunks, query, k=5):
-    query_words = set(query.lower().split())
+    if not chunks:
+        return ""
+
+    keywords = [
+        "trend", "support", "resistance", "breakout", "pullback",
+        "moving average", "ema", "rsi", "macd", "atr",
+        "candlestick", "entry", "stop loss", "risk", "reversal",
+        "continuation", "momentum", "volume", "market psychology"
+    ]
+
+    query_words = set(query.lower().split() + keywords)
     scored_chunks = []
 
     for chunk in chunks:
@@ -322,6 +332,9 @@ def search_technical_knowledge(chunks, query, k=5):
             scored_chunks.append((score, chunk))
 
     scored_chunks.sort(reverse=True, key=lambda x: x[0])
+
+    if not scored_chunks:
+        return "\n\n".join(chunks[:k])
 
     return "\n\n".join(chunk for score, chunk in scored_chunks[:k])
 
@@ -352,6 +365,12 @@ def load_backend_books():
 
 technical_chunks = load_backend_books()
 
+st.sidebar.write(f"Book chunks loaded: {len(technical_chunks)}")
+
+if technical_chunks:
+    with st.sidebar.expander("Preview book text"):
+        st.write(technical_chunks[0][:1000])
+
 if technical_chunks:
     query = (
         f"{ticker} "
@@ -365,6 +384,41 @@ if technical_chunks:
         query,
         k=5
     )
+
+def historical_pattern_analysis(df, daily_trend, four_hour_trend, lookahead=10):
+    data = df.copy()
+
+    # Future return over next N candles
+    data["future_return"] = (
+        data["Close"].shift(-lookahead) / data["Close"] - 1
+    )
+
+    current = data.iloc[-1]
+    current_rsi = current["RSI"]
+
+    # Find historically similar setups
+    similar = data[
+        (data["RSI"].between(current_rsi - 5, current_rsi + 5)) &
+        (data["EMA_20"] > data["EMA_50"])
+    ]
+
+    if len(similar) < 5:
+        return {
+            "samples": len(similar),
+            "avg_forward_return": None,
+            "win_rate": None,
+            "message": "Not enough similar historical setups found."
+        }
+
+    avg_return = similar["future_return"].mean()
+    win_rate = (similar["future_return"] > 0).mean()
+
+    return {
+        "samples": len(similar),
+        "avg_forward_return": avg_return,
+        "win_rate": win_rate,
+        "message": "Historical pattern analysis completed."
+    }
 
 if st.button("Analyze"):
     technical_knowledge = ""
@@ -390,6 +444,22 @@ if st.button("Analyze"):
     trendline = trendline_detection(df_1h)
 
     trade = generate_trade_logic(daily_trend, four_hour_trend, df_1h)
+
+    history_stats = historical_pattern_analysis(
+        df_1h,
+        daily_trend,
+        four_hour_trend
+    )
+
+    st.subheader("Historical Pattern Analysis")
+
+    st.write(f"Similar Setups Found: {history_stats['samples']}")
+
+    if history_stats["avg_forward_return"] is not None:
+        st.write(f"Average Forward Return: {history_stats['avg_forward_return']:.4%}")
+        st.write(f"Win Rate: {history_stats['win_rate']:.2%}")
+    else:
+        st.info(history_stats["message"])
 
     if "technical_chunks" in st.session_state:
         query = (
@@ -496,6 +566,11 @@ Give a clean trading summary with:
 5. Take profit logic
 6. What invalidates the setup
 7. Risk warning
+
+Historical Pattern Analysis:
+Similar Setups: {history_stats['samples']}
+Average Forward Return: {history_stats['avg_forward_return']}
+Win Rate: {history_stats['win_rate']}
 """
 
     if use_ai:
