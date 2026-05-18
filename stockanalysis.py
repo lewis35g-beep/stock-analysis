@@ -1,13 +1,14 @@
 import os
+from pathlib import Path
+from urllib.parse import quote_plus
+
 import yfinance as yf
 import pandas as pd
 import streamlit as st
 import mplfinance as mpf
-from openai import OpenAI
 import feedparser
-from urllib.parse import quote_plus
-from pypdf import PdfReader
-from pathlib import Path
+from openai import OpenAI
+
 
 st.set_page_config(
     page_title="Forex & Stock Technical Analysis App",
@@ -18,6 +19,24 @@ st.title("Forex & Stock Technical Analysis App")
 
 ticker_input = st.text_input("Enter stock, crypto, or forex pair", "EURUSD")
 use_ai = st.checkbox("Use AI Summary")
+
+
+@st.cache_data
+def load_book_rules():
+    rules_file = Path("book_rules.txt")
+
+    if not rules_file.exists():
+        return ""
+
+    return rules_file.read_text(encoding="utf-8")
+
+
+book_rules = load_book_rules()
+
+if book_rules:
+    st.sidebar.success("Book trading rules loaded.")
+else:
+    st.sidebar.warning("No book_rules.txt found.")
 
 
 def normalize_ticker(ticker):
@@ -34,6 +53,7 @@ def normalize_ticker(ticker):
         return ticker + "=X"
 
     return ticker
+
 
 def clean_news_ticker(ticker):
     ticker = ticker.replace("=X", "").upper()
@@ -56,6 +76,7 @@ def clean_news_ticker(ticker):
     }
 
     return forex_news_names.get(ticker, ticker)
+
 
 def get_data(ticker, period, interval):
     df = yf.download(
@@ -189,6 +210,40 @@ def generate_trade_logic(daily_trend, four_hour_trend, one_hour_df):
     }
 
 
+def historical_pattern_analysis(df, lookahead=10):
+    data = df.copy()
+
+    data["future_return"] = (
+        data["Close"].shift(-lookahead) / data["Close"] - 1
+    )
+
+    current = data.iloc[-1]
+    current_rsi = current["RSI"]
+
+    similar = data[
+        (data["RSI"].between(current_rsi - 5, current_rsi + 5)) &
+        (data["EMA_20"] > data["EMA_50"])
+    ]
+
+    if len(similar) < 5:
+        return {
+            "samples": len(similar),
+            "avg_forward_return": None,
+            "win_rate": None,
+            "message": "Not enough similar historical setups found."
+        }
+
+    avg_return = similar["future_return"].mean()
+    win_rate = (similar["future_return"] > 0).mean()
+
+    return {
+        "samples": len(similar),
+        "avg_forward_return": avg_return,
+        "win_rate": win_rate,
+        "message": "Historical pattern analysis completed."
+    }
+
+
 def create_chart(df, ticker, timeframe, trade=None):
     chart_df = df.tail(100).copy()
 
@@ -223,9 +278,13 @@ def create_chart(df, ticker, timeframe, trade=None):
 
     return fig
 
+
 def get_news(ticker, max_articles=10):
     query = quote_plus(ticker)
-    url = f"https://news.google.com/rss/search?q={query}+stock+forex+market&hl=en-US&gl=US&ceid=US:en"
+    url = (
+        f"https://news.google.com/rss/search?"
+        f"q={query}+stock+forex+market&hl=en-US&gl=US&ceid=US:en"
+    )
 
     feed = feedparser.parse(url)
 
@@ -240,6 +299,7 @@ def get_news(ticker, max_articles=10):
         })
 
     return articles
+
 
 def analyze_news_with_ai(ticker, articles):
     api_key = os.getenv("OPENAI_API_KEY")
@@ -275,8 +335,6 @@ For each article, explain briefly why.
 Then give an overall news sentiment:
 Bullish, Bearish, or Neutral.
 
-Also explain whether the news supports or conflicts with the current technical trade setup.
-
 News:
 {news_text}
 """
@@ -288,141 +346,8 @@ News:
 
     return response.output_text
 
-def extract_pdf_text(uploaded_file):
-    reader = PdfReader(uploaded_file)
-    text = ""
-
-    for page in reader.pages:
-        text += page.extract_text() or ""
-
-    return text
-
-
-def chunk_text(text, chunk_size=1500, overlap=200):
-    chunks = []
-    start = 0
-
-    while start < len(text):
-        end = start + chunk_size
-        chunks.append(text[start:end])
-        start += chunk_size - overlap
-
-    return chunks
-
-
-def search_technical_knowledge(chunks, query, k=5):
-    if not chunks:
-        return ""
-
-    keywords = [
-        "trend", "support", "resistance", "breakout", "pullback",
-        "moving average", "ema", "rsi", "macd", "atr",
-        "candlestick", "entry", "stop loss", "risk", "reversal",
-        "continuation", "momentum", "volume", "market psychology"
-    ]
-
-    query_words = set(query.lower().split() + keywords)
-    scored_chunks = []
-
-    for chunk in chunks:
-        chunk_lower = chunk.lower()
-        score = sum(1 for word in query_words if word in chunk_lower)
-
-        if score > 0:
-            scored_chunks.append((score, chunk))
-
-    scored_chunks.sort(reverse=True, key=lambda x: x[0])
-
-    if not scored_chunks:
-        return "\n\n".join(chunks[:k])
-
-    return "\n\n".join(chunk for score, chunk in scored_chunks[:k])
-
-@st.cache_data
-def load_backend_books():
-    books_folder = Path("books")
-    all_text = ""
-
-    if not books_folder.exists():
-        return []
-
-    pdf_files = list(books_folder.glob("*.pdf"))
-
-    for pdf_file in pdf_files:
-        try:
-            with open(pdf_file, "rb") as f:
-                text = extract_pdf_text(f)
-                all_text += text + "\n"
-        except Exception as e:
-            st.warning(f"Could not read {pdf_file.name}: {e}")
-
-    if not all_text.strip():
-        return []
-
-    return chunk_text(all_text)
-
-
-
-technical_chunks = load_backend_books()
-
-st.sidebar.write(f"Book chunks loaded: {len(technical_chunks)}")
-
-if technical_chunks:
-    with st.sidebar.expander("Preview book text"):
-        st.write(technical_chunks[0][:1000])
-
-if technical_chunks:
-    query = (
-        f"{ticker} "
-        f"{daily_trend} "
-        f"{four_hour_trend} "
-        f"RSI ATR support resistance candlestick trend entry"
-    )
-
-    technical_knowledge = search_technical_knowledge(
-        technical_chunks,
-        query,
-        k=5
-    )
-
-def historical_pattern_analysis(df, daily_trend, four_hour_trend, lookahead=10):
-    data = df.copy()
-
-    # Future return over next N candles
-    data["future_return"] = (
-        data["Close"].shift(-lookahead) / data["Close"] - 1
-    )
-
-    current = data.iloc[-1]
-    current_rsi = current["RSI"]
-
-    # Find historically similar setups
-    similar = data[
-        (data["RSI"].between(current_rsi - 5, current_rsi + 5)) &
-        (data["EMA_20"] > data["EMA_50"])
-    ]
-
-    if len(similar) < 5:
-        return {
-            "samples": len(similar),
-            "avg_forward_return": None,
-            "win_rate": None,
-            "message": "Not enough similar historical setups found."
-        }
-
-    avg_return = similar["future_return"].mean()
-    win_rate = (similar["future_return"] > 0).mean()
-
-    return {
-        "samples": len(similar),
-        "avg_forward_return": avg_return,
-        "win_rate": win_rate,
-        "message": "Historical pattern analysis completed."
-    }
 
 if st.button("Analyze"):
-    technical_knowledge = ""
-
     ticker = normalize_ticker(ticker_input)
 
     df_1h = get_data(ticker, "60d", "1h")
@@ -444,46 +369,7 @@ if st.button("Analyze"):
     trendline = trendline_detection(df_1h)
 
     trade = generate_trade_logic(daily_trend, four_hour_trend, df_1h)
-
-    history_stats = historical_pattern_analysis(
-        df_1h,
-        daily_trend,
-        four_hour_trend
-    )
-
-    st.subheader("Historical Pattern Analysis")
-
-    st.write(f"Similar Setups Found: {history_stats['samples']}")
-
-    if history_stats["avg_forward_return"] is not None:
-        st.write(f"Average Forward Return: {history_stats['avg_forward_return']:.4%}")
-        st.write(f"Win Rate: {history_stats['win_rate']:.2%}")
-    else:
-        st.info(history_stats["message"])
-
-    if "technical_chunks" in st.session_state:
-        query = (
-            f"{ticker} "
-            f"{daily_trend} "
-            f"{four_hour_trend} "
-            f"RSI ATR support resistance candlestick trend entry"
-        )
-
-        technical_knowledge = search_technical_knowledge(
-            st.session_state["technical_chunks"],
-            query,
-            k=5
-        )
-
-    if technical_knowledge:
-        st.subheader("Retrieved Book Knowledge Used in Analysis")
-        st.text_area(
-            "Relevant Technical Analysis Passages",
-            technical_knowledge,
-            height=400
-        )
-    else:
-        st.info("No relevant book passages were found.")
+    history_stats = historical_pattern_analysis(df_1h)
 
     st.subheader("Multi-Timeframe Analysis")
 
@@ -513,6 +399,22 @@ if st.button("Analyze"):
         "N/A" if trade["take_profit"] is None else f"{trade['take_profit']:.5f}"
     )
 
+    st.subheader("Historical Pattern Analysis")
+
+    st.write(f"Similar Setups Found: {history_stats['samples']}")
+
+    if history_stats["avg_forward_return"] is not None:
+        st.write(
+            f"Average Forward Return: "
+            f"{history_stats['avg_forward_return']:.4%}"
+        )
+        st.write(
+            f"Win Rate: "
+            f"{history_stats['win_rate']:.2%}"
+        )
+    else:
+        st.info(history_stats["message"])
+
     st.subheader("Charts")
 
     tab1, tab2, tab3 = st.tabs(["1H Entry", "4H Trend", "1D Confirmation"])
@@ -528,12 +430,24 @@ if st.button("Analyze"):
 
     prompt = f"""
 You are a professional forex and stock technical analyst.
-Relevant Uploaded Book Knowledge:
-{technical_knowledge}
+
+You must follow this backend trading rulebook when analyzing trades.
+
+BACKEND TRADING RULEBOOK:
+{book_rules}
+
+Use the rulebook to judge:
+- Whether the setup is valid
+- Whether the entry is high quality
+- Whether risk/reward is acceptable
+- Whether the setup matches proven technical patterns
+- Whether the trade should be buy, sell, or no trade
+
+Do not merely summarize the rulebook. Apply it directly to this market setup.
 
 Analyze {ticker} using this multi-timeframe setup.
 
-Rules:
+Technical Framework:
 - 1D = confirmation
 - 4H = trend direction
 - 1H = entry
@@ -558,19 +472,21 @@ Bias: {trade['bias']}
 Stop Loss: {trade['stop_loss']}
 Take Profit: {trade['take_profit']}
 
-Give a clean trading summary with:
-1. Market bias
-2. Buy, sell, or no-trade setup
-3. Entry idea
-4. Stop loss logic
-5. Take profit logic
-6. What invalidates the setup
-7. Risk warning
-
 Historical Pattern Analysis:
 Similar Setups: {history_stats['samples']}
 Average Forward Return: {history_stats['avg_forward_return']}
 Win Rate: {history_stats['win_rate']}
+
+Give a clean trading summary with:
+1. Market bias
+2. Rulebook validation
+3. Buy, sell, or no-trade decision
+4. Entry idea
+5. Stop loss logic
+6. Take profit logic
+7. What invalidates the setup
+8. Confidence score from 1 to 10
+9. Risk warning
 """
 
     if use_ai:
@@ -609,7 +525,7 @@ Win Rate: {history_stats['win_rate']}
 
         if use_ai:
             try:
-                news_analysis = analyze_news_with_ai(ticker, articles)
+                news_analysis = analyze_news_with_ai(news_query, articles)
 
                 st.subheader("AI News Impact Analysis")
                 st.write(news_analysis)
