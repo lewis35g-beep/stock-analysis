@@ -10,6 +10,7 @@ import feedparser
 from openai import OpenAI
 
 
+# ---------------- PAGE CONFIG ----------------
 st.set_page_config(
     page_title="Forex & Stock Technical Analysis App",
     layout="wide"
@@ -17,10 +18,19 @@ st.set_page_config(
 
 st.title("Forex & Stock Technical Analysis App")
 
+
+# ---------------- INPUTS ----------------
 ticker_input = st.text_input("Enter stock, crypto, or forex pair", "EURUSD")
 use_ai = st.checkbox("Use AI Summary")
 
+major_forex_pairs = [
+    "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
+    "USDCAD", "USDCHF", "NZDUSD",
+    "EURJPY", "GBPJPY", "EURGBP"
+]
 
+
+# ---------------- BACKEND RULEBOOK ----------------
 @st.cache_data
 def load_book_rules():
     rules_file = Path("book_rules.txt")
@@ -37,6 +47,16 @@ if book_rules:
     st.sidebar.success("Book trading rules loaded.")
 else:
     st.sidebar.warning("No book_rules.txt found.")
+
+
+# ---------------- BASIC HELPERS ----------------
+def get_openai_client():
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        return None
+
+    return OpenAI(api_key=api_key)
 
 
 def normalize_ticker(ticker):
@@ -78,6 +98,7 @@ def clean_news_ticker(ticker):
     return forex_news_names.get(ticker, ticker)
 
 
+# ---------------- DATA FUNCTIONS ----------------
 def get_data(ticker, period, interval):
     df = yf.download(
         ticker,
@@ -144,6 +165,7 @@ def add_indicators(df):
     return df
 
 
+# ---------------- TECHNICAL LOGIC ----------------
 def trend_direction(df):
     latest = df.iloc[-1]
 
@@ -244,6 +266,7 @@ def historical_pattern_analysis(df, lookahead=10):
     }
 
 
+# ---------------- CHART ----------------
 def create_chart(df, ticker, timeframe, trade=None):
     chart_df = df.tail(100).copy()
 
@@ -279,6 +302,7 @@ def create_chart(df, ticker, timeframe, trade=None):
     return fig
 
 
+# ---------------- NEWS ----------------
 def get_news(ticker, max_articles=10):
     query = quote_plus(ticker)
     url = (
@@ -302,12 +326,10 @@ def get_news(ticker, max_articles=10):
 
 
 def analyze_news_with_ai(ticker, articles):
-    api_key = os.getenv("OPENAI_API_KEY")
+    client = get_openai_client()
 
-    if not api_key:
-        return "OPENAI_API_KEY not set."
-
-    client = OpenAI(api_key=api_key)
+    if client is None:
+        return "OPENAI_API_KEY is not set."
 
     news_text = ""
 
@@ -346,6 +368,262 @@ News:
 
     return response.output_text
 
+
+# ---------------- FOREX WATCHLIST SCANNER ----------------
+def quick_pair_scan(pair):
+    ticker = normalize_ticker(pair)
+
+    df_1h = get_data(ticker, "60d", "1h")
+    df_1d = get_data(ticker, "2y", "1d")
+
+    if df_1h is None or df_1d is None:
+        return None
+
+    df_4h = resample_to_4h(df_1h)
+
+    df_1h = add_indicators(df_1h)
+    df_4h = add_indicators(df_4h)
+    df_1d = add_indicators(df_1d)
+
+    daily_trend = trend_direction(df_1d)
+    four_hour_trend = trend_direction(df_4h)
+    one_hour_trend = trend_direction(df_1h)
+
+    trade = generate_trade_logic(daily_trend, four_hour_trend, df_1h)
+
+    score = 0
+
+    if daily_trend in ["Bullish", "Bearish"]:
+        score += 30
+
+    if four_hour_trend == daily_trend:
+        score += 30
+
+    if one_hour_trend == daily_trend:
+        score += 20
+
+    if 40 <= trade["rsi"] <= 65:
+        score += 10
+
+    if trade["bias"] != "No Trade / Wait":
+        score += 10
+
+    return {
+        "Pair": pair,
+        "Yahoo Ticker": ticker,
+        "Score": score,
+        "1D Trend": daily_trend,
+        "4H Trend": four_hour_trend,
+        "1H Trend": one_hour_trend,
+        "Bias": trade["bias"],
+        "Price": round(trade["price"], 5),
+        "RSI": round(trade["rsi"], 2),
+        "ATR": round(trade["atr"], 5),
+        "Support": round(trade["support"], 5),
+        "Resistance": round(trade["resistance"], 5),
+        "Stop Loss": None if trade["stop_loss"] is None else round(trade["stop_loss"], 5),
+        "Take Profit": None if trade["take_profit"] is None else round(trade["take_profit"], 5),
+    }
+
+
+def scan_forex_watchlist():
+    results = []
+
+    for pair in major_forex_pairs:
+        result = quick_pair_scan(pair)
+
+        if result:
+            results.append(result)
+
+    df = pd.DataFrame(results)
+
+    if not df.empty:
+        df = df.sort_values(by="Score", ascending=False)
+
+    return df
+
+
+# ---------------- AI ASSISTANT ----------------
+def ask_openai_assistant(question, context=""):
+    client = get_openai_client()
+
+    if client is None:
+        return "OPENAI_API_KEY is not set."
+
+    prompt = f"""
+You are an AI forex trading assistant.
+
+Use this backend trading rulebook:
+{book_rules}
+
+Context:
+{context}
+
+User question:
+{question}
+
+Answer clearly. Focus on:
+- risk management
+- trade quality
+- technical logic
+- rulebook alignment
+- what to watch next
+- what would invalidate the setup
+"""
+
+    response = client.responses.create(
+        model="gpt-4.1-mini",
+        input=prompt
+    )
+
+    return response.output_text
+
+
+def analyze_trade_journal_with_ai(trade_data_text):
+    client = get_openai_client()
+
+    if client is None:
+        return "OPENAI_API_KEY is not set."
+
+    prompt = f"""
+You are a professional trading coach.
+
+Use this backend trading rulebook:
+{book_rules}
+
+Analyze the following trade journal or trade data.
+
+Find:
+1. What went right
+2. What went wrong
+3. Whether the trade followed the rulebook
+4. Entry quality
+5. Stop loss quality
+6. Take profit quality
+7. Risk/reward quality
+8. Psychological mistakes
+9. Repeated patterns
+10. Concrete improvement recommendations
+
+Trade Data:
+{trade_data_text}
+"""
+
+    response = client.responses.create(
+        model="gpt-4.1-mini",
+        input=prompt
+    )
+
+    return response.output_text
+
+
+# ---------------- SECTION: AI FOREX WATCHLIST ----------------
+st.divider()
+st.header("AI Forex Watchlist")
+
+if st.button("Scan Forex Watchlist"):
+    with st.spinner("Scanning major forex pairs..."):
+        watchlist_df = scan_forex_watchlist()
+
+    if watchlist_df.empty:
+        st.warning("No forex setups found.")
+    else:
+        st.dataframe(watchlist_df)
+
+        top_pairs = watchlist_df.head(3)
+
+        st.subheader("Top Forex Pairs to Watch")
+        st.table(top_pairs)
+
+        if use_ai:
+            watchlist_context = watchlist_df.to_string(index=False)
+
+            try:
+                watchlist_ai = ask_openai_assistant(
+                    "Based on this forex watchlist, which pairs should I watch first and why?",
+                    context=watchlist_context
+                )
+
+                st.subheader("AI Watchlist Recommendation")
+                st.write(watchlist_ai)
+
+            except Exception as e:
+                st.error(f"AI watchlist failed: {e}")
+
+
+# ---------------- SECTION: ASK AI ASSISTANT ----------------
+st.divider()
+st.header("Ask AI Trading Assistant")
+
+assistant_question = st.text_area(
+    "Ask a market, strategy, risk, or trade-management question",
+    height=120
+)
+
+if st.button("Ask Assistant"):
+    if not assistant_question.strip():
+        st.warning("Enter a question first.")
+    else:
+        try:
+            answer = ask_openai_assistant(assistant_question)
+            st.subheader("Assistant Answer")
+            st.write(answer)
+        except Exception as e:
+            st.error(f"Assistant failed: {e}")
+
+
+# ---------------- SECTION: TRADE JOURNAL ANALYZER ----------------
+st.divider()
+st.header("Trade Journal Analyzer")
+
+journal_upload = st.file_uploader(
+    "Upload trade journal CSV",
+    type=["csv"]
+)
+
+manual_trade = st.text_area(
+    "Or enter a trade manually",
+    placeholder=(
+        "Example:\n"
+        "Pair: EURUSD\n"
+        "Direction: Buy\n"
+        "Entry: 1.0850\n"
+        "Stop Loss: 1.0810\n"
+        "Take Profit: 1.0930\n"
+        "Reason: Daily bullish, 4H pullback, RSI 52\n"
+        "Outcome: Win/Loss\n"
+        "Notes: ..."
+    ),
+    height=180
+)
+
+if st.button("Analyze Trade Journal"):
+    trade_text = ""
+
+    if journal_upload is not None:
+        journal_df = pd.read_csv(journal_upload)
+        st.dataframe(journal_df)
+        trade_text += journal_df.to_string(index=False)
+
+    if manual_trade.strip():
+        trade_text += "\n\nManual Trade:\n" + manual_trade
+
+    if not trade_text.strip():
+        st.warning("Upload a CSV or enter a trade first.")
+    else:
+        try:
+            journal_ai = analyze_trade_journal_with_ai(trade_text)
+
+            st.subheader("AI Trade Review")
+            st.write(journal_ai)
+
+        except Exception as e:
+            st.error(f"Trade journal AI failed: {e}")
+
+
+# ---------------- SECTION: SINGLE TICKER ANALYSIS ----------------
+st.divider()
+st.header("Single Ticker / Forex Pair Analysis")
 
 if st.button("Analyze"):
     ticker = normalize_ticker(ticker_input)
@@ -490,13 +768,11 @@ Give a clean trading summary with:
 """
 
     if use_ai:
-        api_key = os.getenv("OPENAI_API_KEY")
+        client = get_openai_client()
 
-        if not api_key:
+        if client is None:
             st.warning("OPENAI_API_KEY is not set.")
         else:
-            client = OpenAI(api_key=api_key)
-
             try:
                 response = client.responses.create(
                     model="gpt-4.1-mini",
