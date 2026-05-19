@@ -10,7 +10,6 @@ import feedparser
 from openai import OpenAI
 
 
-# ---------------- PAGE CONFIG ----------------
 st.set_page_config(
     page_title="Forex & Stock Technical Analysis App",
     layout="wide"
@@ -19,9 +18,13 @@ st.set_page_config(
 st.title("Forex & Stock Technical Analysis App")
 
 
-# ---------------- INPUTS ----------------
 ticker_input = st.text_input("Enter stock, crypto, or forex pair", "EURUSD")
 use_ai = st.checkbox("Use AI Summary")
+
+trading_style = st.selectbox(
+    "Select Trading Style",
+    ["Scalping", "Day Trading", "Swing Trading"]
+)
 
 major_forex_pairs = [
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
@@ -30,7 +33,6 @@ major_forex_pairs = [
 ]
 
 
-# ---------------- BACKEND RULEBOOK ----------------
 @st.cache_data
 def load_book_rules():
     rules_file = Path("book_rules.txt")
@@ -49,7 +51,6 @@ else:
     st.sidebar.warning("No book_rules.txt found.")
 
 
-# ---------------- BASIC HELPERS ----------------
 def get_openai_client():
     api_key = os.getenv("OPENAI_API_KEY")
 
@@ -98,7 +99,55 @@ def clean_news_ticker(ticker):
     return forex_news_names.get(ticker, ticker)
 
 
-# ---------------- DATA FUNCTIONS ----------------
+def get_timeframe_settings(style):
+    if style == "Scalping":
+        return {
+            "entry_interval": "5m",
+            "entry_period": "5d",
+            "trend_interval": "15m",
+            "trend_period": "30d",
+            "confirm_interval": "1h",
+            "confirm_period": "60d",
+            "entry_label": "5M Entry",
+            "trend_label": "15M Trend",
+            "confirm_label": "1H Confirmation",
+            "atr_multiplier_sl": 1.0,
+            "atr_multiplier_tp": 1.5,
+            "lookahead": 6
+        }
+
+    if style == "Day Trading":
+        return {
+            "entry_interval": "15m",
+            "entry_period": "30d",
+            "trend_interval": "1h",
+            "trend_period": "60d",
+            "confirm_interval": "1d",
+            "confirm_period": "1y",
+            "entry_label": "15M Entry",
+            "trend_label": "1H Trend",
+            "confirm_label": "1D Confirmation",
+            "atr_multiplier_sl": 1.25,
+            "atr_multiplier_tp": 2.0,
+            "lookahead": 8
+        }
+
+    return {
+        "entry_interval": "1h",
+        "entry_period": "60d",
+        "trend_interval": "1h",
+        "trend_period": "60d",
+        "confirm_interval": "1d",
+        "confirm_period": "2y",
+        "entry_label": "1H Entry",
+        "trend_label": "4H Trend",
+        "confirm_label": "1D Confirmation",
+        "atr_multiplier_sl": 1.5,
+        "atr_multiplier_tp": 3.0,
+        "lookahead": 10
+    }
+
+
 def get_data(ticker, period, interval):
     df = yf.download(
         ticker,
@@ -165,7 +214,6 @@ def add_indicators(df):
     return df
 
 
-# ---------------- TECHNICAL LOGIC ----------------
 def trend_direction(df):
     latest = df.iloc[-1]
 
@@ -198,23 +246,23 @@ def trendline_detection(df, lookback=30):
         return "Flat trendline / consolidation"
 
 
-def generate_trade_logic(daily_trend, four_hour_trend, one_hour_df):
-    latest = one_hour_df.iloc[-1]
+def generate_trade_logic(confirm_trend, trend_trend, entry_df, sl_mult=1.5, tp_mult=3.0):
+    latest = entry_df.iloc[-1]
 
     price = latest["Close"]
     atr = latest["ATR"]
     rsi = latest["RSI"]
 
-    support, resistance = support_resistance(one_hour_df)
+    support, resistance = support_resistance(entry_df)
 
-    if daily_trend == "Bullish" and four_hour_trend in ["Bullish", "Mixed / Sideways"]:
+    if confirm_trend == "Bullish" and trend_trend in ["Bullish", "Mixed / Sideways"]:
         bias = "Buy Only"
-        stop_loss = price - atr * 1.5
-        take_profit = price + atr * 3
-    elif daily_trend == "Bearish" and four_hour_trend in ["Bearish", "Mixed / Sideways"]:
+        stop_loss = price - atr * sl_mult
+        take_profit = price + atr * tp_mult
+    elif confirm_trend == "Bearish" and trend_trend in ["Bearish", "Mixed / Sideways"]:
         bias = "Sell Only"
-        stop_loss = price + atr * 1.5
-        take_profit = price - atr * 3
+        stop_loss = price + atr * sl_mult
+        take_profit = price - atr * tp_mult
     else:
         bias = "No Trade / Wait"
         stop_loss = None
@@ -266,7 +314,6 @@ def historical_pattern_analysis(df, lookahead=10):
     }
 
 
-# ---------------- CHART ----------------
 def create_chart(df, ticker, timeframe, trade=None):
     chart_df = df.tail(100).copy()
 
@@ -302,7 +349,6 @@ def create_chart(df, ticker, timeframe, trade=None):
     return fig
 
 
-# ---------------- NEWS ----------------
 def get_news(ticker, max_articles=10):
     query = quote_plus(ticker)
     url = (
@@ -369,37 +415,49 @@ News:
     return response.output_text
 
 
-# ---------------- FOREX WATCHLIST SCANNER ----------------
-def quick_pair_scan(pair):
+def quick_pair_scan(pair, style):
+    settings = get_timeframe_settings(style)
     ticker = normalize_ticker(pair)
 
-    df_1h = get_data(ticker, "60d", "1h")
-    df_1d = get_data(ticker, "2y", "1d")
+    df_entry = get_data(ticker, settings["entry_period"], settings["entry_interval"])
+    df_confirm = get_data(ticker, settings["confirm_period"], settings["confirm_interval"])
 
-    if df_1h is None or df_1d is None:
+    if df_entry is None or df_confirm is None:
         return None
 
-    df_4h = resample_to_4h(df_1h)
+    if style == "Swing Trading":
+        df_trend = resample_to_4h(df_entry)
+    else:
+        df_trend = get_data(ticker, settings["trend_period"], settings["trend_interval"])
 
-    df_1h = add_indicators(df_1h)
-    df_4h = add_indicators(df_4h)
-    df_1d = add_indicators(df_1d)
+    if df_trend is None:
+        return None
 
-    daily_trend = trend_direction(df_1d)
-    four_hour_trend = trend_direction(df_4h)
-    one_hour_trend = trend_direction(df_1h)
+    df_entry = add_indicators(df_entry)
+    df_trend = add_indicators(df_trend)
+    df_confirm = add_indicators(df_confirm)
 
-    trade = generate_trade_logic(daily_trend, four_hour_trend, df_1h)
+    confirm_trend = trend_direction(df_confirm)
+    trend_trend = trend_direction(df_trend)
+    entry_trend = trend_direction(df_entry)
+
+    trade = generate_trade_logic(
+        confirm_trend,
+        trend_trend,
+        df_entry,
+        settings["atr_multiplier_sl"],
+        settings["atr_multiplier_tp"]
+    )
 
     score = 0
 
-    if daily_trend in ["Bullish", "Bearish"]:
+    if confirm_trend in ["Bullish", "Bearish"]:
         score += 30
 
-    if four_hour_trend == daily_trend:
+    if trend_trend == confirm_trend:
         score += 30
 
-    if one_hour_trend == daily_trend:
+    if entry_trend == confirm_trend:
         score += 20
 
     if 40 <= trade["rsi"] <= 65:
@@ -410,11 +468,12 @@ def quick_pair_scan(pair):
 
     return {
         "Pair": pair,
+        "Style": style,
         "Yahoo Ticker": ticker,
         "Score": score,
-        "1D Trend": daily_trend,
-        "4H Trend": four_hour_trend,
-        "1H Trend": one_hour_trend,
+        "Confirmation Trend": confirm_trend,
+        "Trend Timeframe": trend_trend,
+        "Entry Trend": entry_trend,
         "Bias": trade["bias"],
         "Price": round(trade["price"], 5),
         "RSI": round(trade["rsi"], 2),
@@ -426,11 +485,11 @@ def quick_pair_scan(pair):
     }
 
 
-def scan_forex_watchlist():
+def scan_forex_watchlist(style):
     results = []
 
     for pair in major_forex_pairs:
-        result = quick_pair_scan(pair)
+        result = quick_pair_scan(pair, style)
 
         if result:
             results.append(result)
@@ -443,7 +502,6 @@ def scan_forex_watchlist():
     return df
 
 
-# ---------------- AI ASSISTANT ----------------
 def ask_openai_assistant(question, context=""):
     client = get_openai_client()
 
@@ -467,6 +525,7 @@ Answer clearly. Focus on:
 - trade quality
 - technical logic
 - rulebook alignment
+- scalping vs day trading vs swing trading
 - what to watch next
 - what would invalidate the setup
 """
@@ -517,13 +576,12 @@ Trade Data:
     return response.output_text
 
 
-# ---------------- SECTION: AI FOREX WATCHLIST ----------------
 st.divider()
 st.header("AI Forex Watchlist")
 
 if st.button("Scan Forex Watchlist"):
     with st.spinner("Scanning major forex pairs..."):
-        watchlist_df = scan_forex_watchlist()
+        watchlist_df = scan_forex_watchlist(trading_style)
 
     if watchlist_df.empty:
         st.warning("No forex setups found.")
@@ -540,7 +598,7 @@ if st.button("Scan Forex Watchlist"):
 
             try:
                 watchlist_ai = ask_openai_assistant(
-                    "Based on this forex watchlist, which pairs should I watch first and why?",
+                    f"Based on this {trading_style} forex watchlist, which pairs should I watch first and why?",
                     context=watchlist_context
                 )
 
@@ -551,7 +609,6 @@ if st.button("Scan Forex Watchlist"):
                 st.error(f"AI watchlist failed: {e}")
 
 
-# ---------------- SECTION: ASK AI ASSISTANT ----------------
 st.divider()
 st.header("Ask AI Trading Assistant")
 
@@ -572,7 +629,6 @@ if st.button("Ask Assistant"):
             st.error(f"Assistant failed: {e}")
 
 
-# ---------------- SECTION: TRADE JOURNAL ANALYZER ----------------
 st.divider()
 st.header("Trade Journal Analyzer")
 
@@ -586,6 +642,7 @@ manual_trade = st.text_area(
     placeholder=(
         "Example:\n"
         "Pair: EURUSD\n"
+        "Style: Scalping / Day Trading / Swing Trading\n"
         "Direction: Buy\n"
         "Entry: 1.0850\n"
         "Stop Loss: 1.0810\n"
@@ -621,40 +678,70 @@ if st.button("Analyze Trade Journal"):
             st.error(f"Trade journal AI failed: {e}")
 
 
-# ---------------- SECTION: SINGLE TICKER ANALYSIS ----------------
 st.divider()
 st.header("Single Ticker / Forex Pair Analysis")
 
 if st.button("Analyze"):
+    settings = get_timeframe_settings(trading_style)
     ticker = normalize_ticker(ticker_input)
 
-    df_1h = get_data(ticker, "60d", "1h")
-    df_1d = get_data(ticker, "2y", "1d")
+    df_entry = get_data(
+        ticker,
+        settings["entry_period"],
+        settings["entry_interval"]
+    )
 
-    if df_1h is None or df_1d is None:
+    df_confirm = get_data(
+        ticker,
+        settings["confirm_period"],
+        settings["confirm_interval"]
+    )
+
+    if df_entry is None or df_confirm is None:
         st.error("Invalid ticker or no data found.")
         st.stop()
 
-    df_4h = resample_to_4h(df_1h)
+    if trading_style == "Swing Trading":
+        df_trend = resample_to_4h(df_entry)
+    else:
+        df_trend = get_data(
+            ticker,
+            settings["trend_period"],
+            settings["trend_interval"]
+        )
 
-    df_1h = add_indicators(df_1h)
-    df_4h = add_indicators(df_4h)
-    df_1d = add_indicators(df_1d)
+    if df_trend is None:
+        st.error("Could not load trend timeframe data.")
+        st.stop()
 
-    daily_trend = trend_direction(df_1d)
-    four_hour_trend = trend_direction(df_4h)
-    one_hour_trend = trend_direction(df_1h)
-    trendline = trendline_detection(df_1h)
+    df_entry = add_indicators(df_entry)
+    df_trend = add_indicators(df_trend)
+    df_confirm = add_indicators(df_confirm)
 
-    trade = generate_trade_logic(daily_trend, four_hour_trend, df_1h)
-    history_stats = historical_pattern_analysis(df_1h)
+    confirm_trend = trend_direction(df_confirm)
+    trend_trend = trend_direction(df_trend)
+    entry_trend = trend_direction(df_entry)
+    trendline = trendline_detection(df_entry)
 
-    st.subheader("Multi-Timeframe Analysis")
+    trade = generate_trade_logic(
+        confirm_trend,
+        trend_trend,
+        df_entry,
+        settings["atr_multiplier_sl"],
+        settings["atr_multiplier_tp"]
+    )
+
+    history_stats = historical_pattern_analysis(
+        df_entry,
+        lookahead=settings["lookahead"]
+    )
+
+    st.subheader(f"{trading_style} Multi-Timeframe Analysis")
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("1D Confirmation", daily_trend)
-    col2.metric("4H Trend", four_hour_trend)
-    col3.metric("1H Entry Trend", one_hour_trend)
+    col1.metric(settings["confirm_label"], confirm_trend)
+    col2.metric(settings["trend_label"], trend_trend)
+    col3.metric(settings["entry_label"], entry_trend)
     col4.metric("Bias", trade["bias"])
 
     st.subheader("Trade Setup")
@@ -695,19 +782,26 @@ if st.button("Analyze"):
 
     st.subheader("Charts")
 
-    tab1, tab2, tab3 = st.tabs(["1H Entry", "4H Trend", "1D Confirmation"])
+    tab1, tab2, tab3 = st.tabs([
+        settings["entry_label"],
+        settings["trend_label"],
+        settings["confirm_label"]
+    ])
 
     with tab1:
-        st.pyplot(create_chart(df_1h, ticker, "1H Entry", trade))
+        st.pyplot(create_chart(df_entry, ticker, settings["entry_label"], trade))
 
     with tab2:
-        st.pyplot(create_chart(df_4h, ticker, "4H Trend"))
+        st.pyplot(create_chart(df_trend, ticker, settings["trend_label"]))
 
     with tab3:
-        st.pyplot(create_chart(df_1d, ticker, "1D Confirmation"))
+        st.pyplot(create_chart(df_confirm, ticker, settings["confirm_label"]))
 
     prompt = f"""
 You are a professional forex and stock technical analyst.
+
+Trading Style:
+{trading_style}
 
 You must follow this backend trading rulebook when analyzing trades.
 
@@ -715,7 +809,7 @@ BACKEND TRADING RULEBOOK:
 {book_rules}
 
 Use the rulebook to judge:
-- Whether the setup is valid
+- Whether the setup is valid for {trading_style}
 - Whether the entry is high quality
 - Whether risk/reward is acceptable
 - Whether the setup matches proven technical patterns
@@ -726,18 +820,14 @@ Do not merely summarize the rulebook. Apply it directly to this market setup.
 Analyze {ticker} using this multi-timeframe setup.
 
 Technical Framework:
-- 1D = confirmation
-- 4H = trend direction
-- 1H = entry
-- Only take buys if Daily trend is bullish
-- Only take sells if Daily trend is bearish
-- Use ATR for stop loss planning
-- Use support and resistance for targets
+- Confirmation timeframe: {settings["confirm_label"]}
+- Trend timeframe: {settings["trend_label"]}
+- Entry timeframe: {settings["entry_label"]}
 
 Market Summary:
-1D Trend: {daily_trend}
-4H Trend: {four_hour_trend}
-1H Trend: {one_hour_trend}
+Confirmation Trend: {confirm_trend}
+Trend Timeframe Direction: {trend_trend}
+Entry Timeframe Direction: {entry_trend}
 Trendline: {trendline}
 
 Trade Data:
