@@ -10,11 +10,7 @@ import feedparser
 from openai import OpenAI
 
 
-st.set_page_config(
-    page_title="Forex & Stock Technical Analysis App",
-    layout="wide"
-)
-
+st.set_page_config(page_title="Forex & Stock Technical Analysis App", layout="wide")
 st.title("Forex & Stock Technical Analysis App")
 
 
@@ -36,10 +32,8 @@ major_forex_pairs = [
 @st.cache_data
 def load_book_rules():
     rules_file = Path("book_rules.txt")
-
     if not rules_file.exists():
         return ""
-
     return rules_file.read_text(encoding="utf-8")
 
 
@@ -53,10 +47,8 @@ else:
 
 def get_openai_client():
     api_key = os.getenv("OPENAI_API_KEY")
-
     if not api_key:
         return None
-
     return OpenAI(api_key=api_key)
 
 
@@ -198,6 +190,7 @@ def add_indicators(df):
     high_low = df["High"] - df["Low"]
     high_close = abs(df["High"] - df["Close"].shift())
     low_close = abs(df["Low"] - df["Close"].shift())
+
     true_range = pd.concat(
         [high_low, high_close, low_close],
         axis=1
@@ -219,10 +212,11 @@ def trend_direction(df):
 
     if latest["EMA_20"] > latest["EMA_50"] > latest["EMA_200"]:
         return "Bullish"
-    elif latest["EMA_20"] < latest["EMA_50"] < latest["EMA_200"]:
+
+    if latest["EMA_20"] < latest["EMA_50"] < latest["EMA_200"]:
         return "Bearish"
-    else:
-        return "Mixed / Sideways"
+
+    return "Mixed / Sideways"
 
 
 def support_resistance(df, lookback=50):
@@ -240,10 +234,11 @@ def trendline_detection(df, lookback=30):
 
     if last_close > first_close:
         return "Uptrend line rising"
-    elif last_close < first_close:
+
+    if last_close < first_close:
         return "Downtrend line falling"
-    else:
-        return "Flat trendline / consolidation"
+
+    return "Flat trendline / consolidation"
 
 
 def generate_trade_logic(confirm_trend, trend_trend, entry_df, sl_mult=1.5, tp_mult=3.0):
@@ -259,10 +254,12 @@ def generate_trade_logic(confirm_trend, trend_trend, entry_df, sl_mult=1.5, tp_m
         bias = "Buy Only"
         stop_loss = price - atr * sl_mult
         take_profit = price + atr * tp_mult
+
     elif confirm_trend == "Bearish" and trend_trend in ["Bearish", "Mixed / Sideways"]:
         bias = "Sell Only"
         stop_loss = price + atr * sl_mult
         take_profit = price - atr * tp_mult
+
     else:
         bias = "No Trade / Wait"
         stop_loss = None
@@ -312,6 +309,60 @@ def historical_pattern_analysis(df, lookahead=10):
         "win_rate": win_rate,
         "message": "Historical pattern analysis completed."
     }
+
+
+def calculate_forecast_score(confirm_trend, trend_trend, entry_trend, trade, history_stats):
+    score = 0
+    reasons = []
+
+    if confirm_trend in ["Bullish", "Bearish"]:
+        score += 25
+        reasons.append("Confirmation timeframe has a clear trend")
+
+    if trend_trend == confirm_trend:
+        score += 25
+        reasons.append("Trend timeframe agrees with confirmation timeframe")
+
+    if entry_trend == confirm_trend:
+        score += 15
+        reasons.append("Entry timeframe agrees with confirmation trend")
+
+    if trade["bias"] != "No Trade / Wait":
+        score += 10
+        reasons.append("Trade bias is actionable")
+
+    if 40 <= trade["rsi"] <= 65:
+        score += 10
+        reasons.append("RSI is in a healthy continuation zone")
+    elif trade["rsi"] > 75 or trade["rsi"] < 25:
+        score -= 10
+        reasons.append("RSI is extended")
+
+    if history_stats["win_rate"] is not None:
+        if history_stats["win_rate"] >= 0.60:
+            score += 10
+            reasons.append("Historical win rate is favorable")
+        elif history_stats["win_rate"] < 0.45:
+            score -= 10
+            reasons.append("Historical win rate is weak")
+
+    if trade["stop_loss"] is not None and trade["take_profit"] is not None:
+        risk = abs(trade["price"] - trade["stop_loss"])
+        reward = abs(trade["take_profit"] - trade["price"])
+
+        if risk > 0:
+            rr = reward / risk
+
+            if rr >= 2:
+                score += 10
+                reasons.append("Reward-to-risk is 2:1 or better")
+            elif rr < 1:
+                score -= 10
+                reasons.append("Reward-to-risk is weak")
+
+    score = max(0, min(score, 100))
+
+    return score, reasons
 
 
 def create_chart(df, ticker, timeframe, trade=None):
@@ -391,17 +442,9 @@ Link: {article['link']}
     prompt = f"""
 You are a market news analyst.
 
-Analyze the following public news headlines for {ticker}.
+Analyze these public news headlines for {ticker}.
 
-Determine whether the news is:
-- Bullish for price
-- Bearish for price
-- Neutral / unclear
-
-For each article, explain briefly why.
-
-Then give an overall news sentiment:
-Bullish, Bearish, or Neutral.
+Determine whether the news is bullish, bearish, or neutral for price.
 
 News:
 {news_text}
@@ -449,28 +492,25 @@ def quick_pair_scan(pair, style):
         settings["atr_multiplier_tp"]
     )
 
-    score = 0
+    history_stats = historical_pattern_analysis(
+        df_entry,
+        lookahead=settings["lookahead"]
+    )
 
-    if confirm_trend in ["Bullish", "Bearish"]:
-        score += 30
-
-    if trend_trend == confirm_trend:
-        score += 30
-
-    if entry_trend == confirm_trend:
-        score += 20
-
-    if 40 <= trade["rsi"] <= 65:
-        score += 10
-
-    if trade["bias"] != "No Trade / Wait":
-        score += 10
+    forecast_score, forecast_reasons = calculate_forecast_score(
+        confirm_trend,
+        trend_trend,
+        entry_trend,
+        trade,
+        history_stats
+    )
 
     return {
         "Pair": pair,
         "Style": style,
         "Yahoo Ticker": ticker,
-        "Score": score,
+        "Forecast Score": forecast_score,
+        "Score Reasons": " | ".join(forecast_reasons),
         "Confirmation Trend": confirm_trend,
         "Trend Timeframe": trend_trend,
         "Entry Trend": entry_trend,
@@ -482,6 +522,8 @@ def quick_pair_scan(pair, style):
         "Resistance": round(trade["resistance"], 5),
         "Stop Loss": None if trade["stop_loss"] is None else round(trade["stop_loss"], 5),
         "Take Profit": None if trade["take_profit"] is None else round(trade["take_profit"], 5),
+        "Historical Samples": history_stats["samples"],
+        "Historical Win Rate": history_stats["win_rate"]
     }
 
 
@@ -497,7 +539,7 @@ def scan_forex_watchlist(style):
     df = pd.DataFrame(results)
 
     if not df.empty:
-        df = df.sort_values(by="Score", ascending=False)
+        df = df.sort_values(by="Forecast Score", ascending=False)
 
     return df
 
@@ -520,14 +562,7 @@ Context:
 User question:
 {question}
 
-Answer clearly. Focus on:
-- risk management
-- trade quality
-- technical logic
-- rulebook alignment
-- scalping vs day trading vs swing trading
-- what to watch next
-- what would invalidate the setup
+Answer clearly. Focus on risk, trade quality, rulebook alignment, and what to watch next.
 """
 
     response = client.responses.create(
@@ -550,19 +585,11 @@ You are a professional trading coach.
 Use this backend trading rulebook:
 {book_rules}
 
-Analyze the following trade journal or trade data.
+Analyze this trade journal.
 
-Find:
-1. What went right
-2. What went wrong
-3. Whether the trade followed the rulebook
-4. Entry quality
-5. Stop loss quality
-6. Take profit quality
-7. Risk/reward quality
-8. Psychological mistakes
-9. Repeated patterns
-10. Concrete improvement recommendations
+Find what went right, what went wrong, whether it followed the rulebook,
+entry quality, stop loss quality, risk/reward quality, psychological mistakes,
+and improvement recommendations.
 
 Trade Data:
 {trade_data_text}
@@ -632,15 +659,11 @@ if st.button("Ask Assistant"):
 st.divider()
 st.header("Trade Journal Analyzer")
 
-journal_upload = st.file_uploader(
-    "Upload trade journal CSV",
-    type=["csv"]
-)
+journal_upload = st.file_uploader("Upload trade journal CSV", type=["csv"])
 
 manual_trade = st.text_area(
     "Or enter a trade manually",
     placeholder=(
-        "Example:\n"
         "Pair: EURUSD\n"
         "Style: Scalping / Day Trading / Swing Trading\n"
         "Direction: Buy\n"
@@ -670,10 +693,8 @@ if st.button("Analyze Trade Journal"):
     else:
         try:
             journal_ai = analyze_trade_journal_with_ai(trade_text)
-
             st.subheader("AI Trade Review")
             st.write(journal_ai)
-
         except Exception as e:
             st.error(f"Trade journal AI failed: {e}")
 
@@ -685,17 +706,8 @@ if st.button("Analyze"):
     settings = get_timeframe_settings(trading_style)
     ticker = normalize_ticker(ticker_input)
 
-    df_entry = get_data(
-        ticker,
-        settings["entry_period"],
-        settings["entry_interval"]
-    )
-
-    df_confirm = get_data(
-        ticker,
-        settings["confirm_period"],
-        settings["confirm_interval"]
-    )
+    df_entry = get_data(ticker, settings["entry_period"], settings["entry_interval"])
+    df_confirm = get_data(ticker, settings["confirm_period"], settings["confirm_interval"])
 
     if df_entry is None or df_confirm is None:
         st.error("Invalid ticker or no data found.")
@@ -704,11 +716,7 @@ if st.button("Analyze"):
     if trading_style == "Swing Trading":
         df_trend = resample_to_4h(df_entry)
     else:
-        df_trend = get_data(
-            ticker,
-            settings["trend_period"],
-            settings["trend_interval"]
-        )
+        df_trend = get_data(ticker, settings["trend_period"], settings["trend_interval"])
 
     if df_trend is None:
         st.error("Could not load trend timeframe data.")
@@ -736,13 +744,26 @@ if st.button("Analyze"):
         lookahead=settings["lookahead"]
     )
 
+    forecast_score, forecast_reasons = calculate_forecast_score(
+        confirm_trend,
+        trend_trend,
+        entry_trend,
+        trade,
+        history_stats
+    )
+
     st.subheader(f"{trading_style} Multi-Timeframe Analysis")
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric(settings["confirm_label"], confirm_trend)
     col2.metric(settings["trend_label"], trend_trend)
     col3.metric(settings["entry_label"], entry_trend)
     col4.metric("Bias", trade["bias"])
+    col5.metric("Forecast Score", f"{forecast_score}/100")
+
+    with st.expander("Why this forecast score?"):
+        for reason in forecast_reasons:
+            st.write(f"- {reason}")
 
     st.subheader("Trade Setup")
 
@@ -755,28 +776,15 @@ if st.button("Analyze"):
     c5, c6, c7, c8 = st.columns(4)
     c5.metric("Support", f"{trade['support']:.5f}")
     c6.metric("Resistance", f"{trade['resistance']:.5f}")
-    c7.metric(
-        "Stop Loss",
-        "N/A" if trade["stop_loss"] is None else f"{trade['stop_loss']:.5f}"
-    )
-    c8.metric(
-        "Take Profit",
-        "N/A" if trade["take_profit"] is None else f"{trade['take_profit']:.5f}"
-    )
+    c7.metric("Stop Loss", "N/A" if trade["stop_loss"] is None else f"{trade['stop_loss']:.5f}")
+    c8.metric("Take Profit", "N/A" if trade["take_profit"] is None else f"{trade['take_profit']:.5f}")
 
     st.subheader("Historical Pattern Analysis")
-
     st.write(f"Similar Setups Found: {history_stats['samples']}")
 
     if history_stats["avg_forward_return"] is not None:
-        st.write(
-            f"Average Forward Return: "
-            f"{history_stats['avg_forward_return']:.4%}"
-        )
-        st.write(
-            f"Win Rate: "
-            f"{history_stats['win_rate']:.2%}"
-        )
+        st.write(f"Average Forward Return: {history_stats['avg_forward_return']:.4%}")
+        st.write(f"Win Rate: {history_stats['win_rate']:.2%}")
     else:
         st.info(history_stats["message"])
 
@@ -803,26 +811,19 @@ You are a professional forex and stock technical analyst.
 Trading Style:
 {trading_style}
 
-You must follow this backend trading rulebook when analyzing trades.
-
 BACKEND TRADING RULEBOOK:
 {book_rules}
 
-Use the rulebook to judge:
-- Whether the setup is valid for {trading_style}
-- Whether the entry is high quality
-- Whether risk/reward is acceptable
-- Whether the setup matches proven technical patterns
-- Whether the trade should be buy, sell, or no trade
+Use the rulebook to judge whether the setup is valid.
 
-Do not merely summarize the rulebook. Apply it directly to this market setup.
+Ticker:
+{ticker}
 
-Analyze {ticker} using this multi-timeframe setup.
+Forecast Score:
+{forecast_score}/100
 
-Technical Framework:
-- Confirmation timeframe: {settings["confirm_label"]}
-- Trend timeframe: {settings["trend_label"]}
-- Entry timeframe: {settings["entry_label"]}
+Forecast Score Reasons:
+{forecast_reasons}
 
 Market Summary:
 Confirmation Trend: {confirm_trend}
@@ -845,7 +846,7 @@ Similar Setups: {history_stats['samples']}
 Average Forward Return: {history_stats['avg_forward_return']}
 Win Rate: {history_stats['win_rate']}
 
-Give a clean trading summary with:
+Give:
 1. Market bias
 2. Rulebook validation
 3. Buy, sell, or no-trade decision
@@ -892,9 +893,7 @@ Give a clean trading summary with:
         if use_ai:
             try:
                 news_analysis = analyze_news_with_ai(news_query, articles)
-
                 st.subheader("AI News Impact Analysis")
                 st.write(news_analysis)
-
             except Exception as e:
                 st.error(f"News AI analysis failed: {e}")
